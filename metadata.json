@@ -1,0 +1,7 @@
+{
+  "name": "Second Voice",
+  "description": "A voice-first second brain that structures your thoughts automatically.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
