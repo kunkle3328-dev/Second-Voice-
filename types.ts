@@ -17,11 +17,22 @@ export interface Link {
   rationale: string;
 }
 
+export interface VoiceDetails {
+  pace: number;        // 0-1
+  pauseDensity: number;// 0-1
+  emphasis: number;    // 0-1
+  warmth: number;      // 0-1
+  breathiness: number; // 0-1
+  disfluency: number;  // 0-1
+}
+
 export interface UserSettings {
   voicePreset: VoicePresetName;
   handsFree: boolean;
   vadSensitivity: number; // 0-1
   autoEndTurn: boolean;
+  bargeIn: boolean;
+  voiceDetails: VoiceDetails;
 }
 
 export type VoicePresetName = 'Notebook-Clean' | 'Reflective' | 'Creative' | 'Analytical' | 'Gentle';
@@ -30,6 +41,8 @@ export interface VoiceConfigProfile {
   name: VoicePresetName;
   voiceName: string;
   systemPromptModifier: string;
+  description: string;
+  defaultDetails: VoiceDetails;
 }
 
 export type Tab = 'think' | 'ideas' | 'links' | 'timeline' | 'you';

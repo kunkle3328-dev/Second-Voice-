@@ -1,5 +1,5 @@
 import { GoogleGenAI, LiveServerMessage, Modality, Type, FunctionDeclaration, Tool } from '@google/genai';
-import { UserSettings, Idea } from '../types';
+import { UserSettings, Idea, VoiceDetails } from '../types';
 import { VOICE_PRESETS, SYSTEM_INSTRUCTION } from '../constants';
 import * as AudioUtils from './audioUtils';
 import * as DB from './db';
@@ -43,12 +43,32 @@ let inputSource: MediaStreamAudioSourceNode | null = null;
 let processor: ScriptProcessorNode | null = null;
 let currentSettings: UserSettings | null = null;
 let nextStartTime = 0;
+let scheduledSources: AudioBufferSourceNode[] = [];
 
 export interface LiveCallbacks {
   onStateChange: (state: 'idle' | 'listening' | 'speaking' | 'processing') => void;
   onTranscript: (text: string, isUser: boolean) => void;
   onAudioLevel: (level: number) => void;
 }
+
+const generateSystemConfig = (settings: UserSettings): string => {
+  const profile = VOICE_PRESETS[settings.voicePreset];
+  const d = settings.voiceDetails;
+  
+  const voiceParams = `
+SPEECH STYLE PARAMETERS:
+- Pace: ${Math.round(d.pace * 100)}% (0=Slow, 100=Fast).
+- Pause Density: ${Math.round(d.pauseDensity * 100)}% (Frequency of pauses).
+- Emphasis: ${Math.round(d.emphasis * 100)}% (Variation in stress).
+- Warmth: ${Math.round(d.warmth * 100)}% (0=Clinical, 100=Very Warm).
+- Breathiness: ${Math.round(d.breathiness * 100)}% (Aspirated voice quality).
+- Disfluency: ${Math.round(d.disfluency * 100)}% (Use of natural fillers like umm, uhh).
+
+Apply these speech style parameters to your audio generation.
+`;
+
+  return `${SYSTEM_INSTRUCTION}\n\nCORE TONE: ${profile.systemPromptModifier}\n\n${voiceParams}`;
+};
 
 export const connectLive = async (
   settings: UserSettings, 
@@ -58,12 +78,21 @@ export const connectLive = async (
     await disconnectLive();
   }
 
+  // RESET TIMING AND STATE
+  nextStartTime = 0;
+  scheduledSources = [];
   currentSettings = settings;
   const voiceProfile = VOICE_PRESETS[settings.voicePreset] || VOICE_PRESETS['Notebook-Clean'];
 
   // Initialize Audio Contexts
   inputAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
   outputAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+  
+  // Ensure AudioContext is running (mobile browsers sometimes start suspended)
+  if (outputAudioContext.state === 'suspended') {
+    await outputAudioContext.resume();
+  }
+
   const outputNode = outputAudioContext.createGain();
   outputNode.connect(outputAudioContext.destination);
 
@@ -85,7 +114,7 @@ export const connectLive = async (
     model: 'gemini-2.5-flash-native-audio-preview-09-2025',
     config: {
       responseModalities: [Modality.AUDIO],
-      systemInstruction: SYSTEM_INSTRUCTION + "\n\nTone Instruction: " + voiceProfile.systemPromptModifier,
+      systemInstruction: generateSystemConfig(settings),
       speechConfig: {
         voiceConfig: { prebuiltVoiceConfig: { voiceName: voiceProfile.voiceName } }
       },
@@ -127,9 +156,30 @@ export const connectLive = async (
         processor.connect(inputAudioContext!.destination); // Helper to keep processor alive
       },
       onmessage: async (msg: LiveServerMessage) => {
+        // Handle Interruption
+        const interrupted = msg.serverContent?.interrupted;
+        if (interrupted) {
+          console.log('Interrupted by user');
+          scheduledSources.forEach(s => {
+            try { s.stop(); } catch(e) { console.warn(e); }
+          });
+          scheduledSources = [];
+          if (outputAudioContext) {
+            nextStartTime = outputAudioContext.currentTime;
+          }
+          callbacks.onStateChange('listening');
+          return;
+        }
+
         // Handle Audio Output
         const audioData = msg.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
         if (audioData && outputAudioContext) {
+          
+          // Ensure context is running
+          if (outputAudioContext.state === 'suspended') {
+            await outputAudioContext.resume();
+          }
+
           callbacks.onStateChange('speaking');
           const buffer = AudioUtils.base64ToUint8Array(audioData);
           
@@ -147,12 +197,19 @@ export const connectLive = async (
           source.connect(outputNode);
           
           const now = outputAudioContext.currentTime;
-          nextStartTime = Math.max(nextStartTime, now);
+          // IMPORTANT: nextStartTime management
+          // If nextStartTime is in the past (due to delay or interruption), reset it to now.
+          if (nextStartTime < now) {
+            nextStartTime = now;
+          }
+
           source.start(nextStartTime);
+          scheduledSources.push(source);
           nextStartTime += audioBuffer.duration;
           
           source.onended = () => {
-             if (outputAudioContext && outputAudioContext.currentTime >= nextStartTime) {
+             scheduledSources = scheduledSources.filter(s => s !== source);
+             if (outputAudioContext && scheduledSources.length === 0 && outputAudioContext.currentTime >= nextStartTime - 0.1) {
                  callbacks.onStateChange('listening');
              }
           };
@@ -236,9 +293,11 @@ export const disconnectLive = async () => {
   if (processor) processor.disconnect();
   if (inputAudioContext) await inputAudioContext.close();
   if (outputAudioContext) await outputAudioContext.close();
-  // Live API session closing isn't explicitly exposed in the same way as WebSocket close usually, 
-  // but releasing the context stops the stream.
-  // Ideally, session.close() if available in SDK.
+  // Clear any scheduled sources
+  scheduledSources.forEach(s => {
+    try { s.stop(); } catch(e) {}
+  });
+  scheduledSources = [];
   inputAudioContext = null;
   outputAudioContext = null;
   session = null;

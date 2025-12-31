@@ -55,6 +55,15 @@ const DEFAULT_SETTINGS: UserSettings = {
   handsFree: false,
   vadSensitivity: 0.5,
   autoEndTurn: true,
+  bargeIn: true,
+  voiceDetails: { 
+    pace: 0.6, 
+    pauseDensity: 0.2, 
+    emphasis: 0.5, 
+    warmth: 0.4, 
+    breathiness: 0.0, 
+    disfluency: 0.0 
+  },
 };
 
 export const getSettings = (): UserSettings => {
